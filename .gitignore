@@ -1,0 +1,8 @@
+.env
+bin/
+lib/
+include/
+pyvenv.cfg
+restaurants.txt
+wa_airports
+wa_counties
