@@ -8,9 +8,7 @@ from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 
 from vincenty import vincenty
-
 from haversine import haversine, Unit
-
 from geopy.distance import geodesic, great_circle
 
 
@@ -20,8 +18,15 @@ all_states = (
     "AL AZ AR CA CO CT DE FL GA ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT "
     "NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY "
 )
+
+# :TODO: config for which states to look at
 ALLOWED_STATES = set(all_states.split())
-ALLOWED_STATES = set("ID MT NV UT WY ".split())
+#ALLOWED_STATES = set("ID MT NV UT WY ".split())
+#ALLOWED_STATES = set("OR WA CA OR ID MT UT".split())
+ALLOWED_STATES = set(["WA"])
+
+
+RESTRICT_TO_AIRPORTS = set()
 
 DEFAULT_AIRPORTS = [
     Airport("PAE", 172465.2000, 440213.7000, "KING", "WA", None, None),
@@ -56,17 +61,21 @@ def print_solution(manager, routing, assignment):
     print(plan_output)
     plan_output += 'Route distance: {}miles\n'.format(route_distance)
 
+
 @functools.lru_cache(maxsize=None)
 def do_vincenty(lon1, lat1, lon2, lat2):
     return vincenty((lat1, lon1), (lat2, lon2), miles=True) / 1.151
+
 
 @functools.lru_cache(maxsize=None)
 def do_great_circle(lon1, lat1, lon2, lat2):
     return great_circle((lat1, lon1), (lat2, lon2)).miles / 1.151
 
+
 @functools.lru_cache(maxsize=None)
 def do_haversine2(lon1, lat1, lon2, lat2):
     return haversine((lat1, lon1), (lat2, lon2), unit=Unit.NAUTICAL_MILES)
+
 
 @functools.lru_cache(maxsize=None)
 def do_haversine(lon1, lat1, lon2, lat2):
@@ -85,10 +94,10 @@ def do_haversine(lon1, lat1, lon2, lat2):
     #lon1, lat1, lon2, lat2 = map(radians, [lon1/3600, lat1/3600, lon2/3600, lat2/3600])
 
     # haversine formula 
-    dlon = lon2 - lon1 
-    dlat = lat2 - lat1 
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
     a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-    c = 2 * asin(sqrt(a)) 
+    c = 2 * asin(sqrt(a))
     r = 3440 # radius of earth in chosen units
     return c * r
 
@@ -119,6 +128,8 @@ def main(depot=0):
             #return do_haversine2(from_airport.lon_deg, from_airport.lat_deg, to_airport.lon_deg, to_airport.lat_deg)
             return do_haversine(from_airport.lon_rad, from_airport.lat_rad, to_airport.lon_rad, to_airport.lat_rad)
         else:
+            # if any lat or lon is None, it's the dummy node, which means
+            # movement to it or from it is free
             return 0
 
     transit_callback_index = routing.RegisterTransitCallback(distance_callback)
@@ -133,7 +144,8 @@ def main(depot=0):
     # Setting first solution heuristic.
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
     search_parameters.first_solution_strategy = (
-        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC)
+        routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+    )
 
     # Solve the problem.
     assignment = routing.SolveWithParameters(search_parameters)
@@ -149,17 +161,24 @@ def load_airports_tsv(airport_data_file):
 
         airports = []
         for row in airport_data:
+            # :TODO: filter here
             if row['Type'] != 'AIRPORT' or row['Use'] != 'PU':
                 continue
             
             if row['State'] not in ALLOWED_STATES:
                 continue
 
+            # none means 
+            if RESTRICT_TO_AIRPORTS: 
+                if not (row['IcaoIdentifier'] in RESTRICT_TO_AIRPORTS or row['LocationID'].strip("'") in RESTRICT_TO_AIRPORTS):
+                    continue
+
             #if not row['IcaoIdentifier']:
             #    continue
 
-            #if "100" not in row['FuelTypes']:
-            #    continue
+            # :TODO: config
+            if "100" not in row['FuelTypes']:
+                continue
 
             # prefer ICAO airport code
             if row['IcaoIdentifier']:
@@ -168,19 +187,16 @@ def load_airports_tsv(airport_data_file):
                 code = row['LocationID'].strip("'")
                 
             ns_hemi = 1 if row['ARPLatitudeS'].endswith("S") else -1
-            ew_hemi = 1 if row['ARPLongitudeS'].endswith("E") else -1
-
             lat = float(row['ARPLatitudeS'].strip("NS")) / 3600
             lat *= ns_hemi
 
+            ew_hemi = 1 if row['ARPLongitudeS'].endswith("E") else -1
             lon = float(row['ARPLongitudeS'].strip("EW")) / 3600
             lon *= ew_hemi
 
             airport = Airport(
 		code,
-		#radians(float(row['ARPLatitudeS'].strip("NS"))/3600) * ns_hemi,
 		radians(lat),
-		#radians(float(row['ARPLongitudeS'].strip("EW"))/3600) * ew_hemi,
 		radians(lon),
 		row['County'],
 		row['State'],
@@ -195,24 +211,30 @@ def load_airports_tsv(airport_data_file):
 
 if __name__ == '__main__':
     if len(sys.argv) >= 2:
-        print(f"Loading airports from {sys.argv[1]}... ", end="")
-        airports = load_airports_tsv(sys.argv[1])
+        if len(sys.argv) >= 4:
+            for code in open(sys.argv[3]):
+                RESTRICT_TO_AIRPORTS.add(code.strip())
+
+        print(RESTRICT_TO_AIRPORTS)
+        print(f"Loading airports db from {sys.argv[1]}... ", end="")
+        airport_db = load_airports_tsv(sys.argv[1])
 
         if len(sys.argv) >= 3:
-            base_index = [x.code for x in airports].index(sys.argv[2])
+            base_index = [x.code for x in airport_db].index(sys.argv[2])
         else:
             # insert a free dummy airport and always start from there
             dummy = Airport('DUMMY', None, None, None, None, None, None)
-            airports.insert(0, dummy)
+            airport_db.insert(0, dummy)
             base_index = 0
 
         disjunctions = defaultdict(list)
-        for i, airport in enumerate(airports):
+        for i, airport in enumerate(airport_db):
             #disjunctions[airport.county].append(i)
             disjunctions[airport.state].append(i)
+            pass
 
         # setup globals
-        AIRPORTS = airports
+        AIRPORTS = airport_db
         DISJUNCTIONS = disjunctions
         #print(DISJUNCTIONS)
         print(f"loaded {len(AIRPORTS)} and {len(DISJUNCTIONS)} disjunctions")
